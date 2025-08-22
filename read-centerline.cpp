@@ -1,4 +1,3 @@
-// read_centerline.cpp
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,13 +5,16 @@
 #include <string>
 #include <cctype>
 #include <limits>
-#include <algorithm> // 追加
-#include <cstdlib>   // 追加: std::strtod
-#include <cerrno>    // 追加: errno
+#include <algorithm>
+#include <cstdlib>
+#include <cerrno>
 
 struct Point3D
 {
     double x, y, z;
+    // if there is a radius column in centerline file(*.csv)
+    double radius = std::numeric_limits<double>::quiet_NaN();
+    bool has_radius = false;
 };
 
 static bool is_number(const std::string &s)
@@ -44,12 +46,12 @@ static std::vector<std::string> tokenize_relaxed(std::string line)
     return toks;
 }
 
-static bool parse_xyz_from_line(const std::string &line, Point3D &out)
+static bool parse_xyzr_from_line(const std::string &line, Point3D &out)
 {
     std::string trimmed = line;
 
     auto notspace = [](int ch)
-    { return !std::isspace(ch); };
+    { return !std::isspace(static_cast<unsigned char>(ch)); };
     trimmed.erase(trimmed.begin(),
                   std::find_if(trimmed.begin(), trimmed.end(), notspace));
     trimmed.erase(std::find_if(trimmed.rbegin(), trimmed.rend(), notspace).base(),
@@ -69,6 +71,17 @@ static bool parse_xyz_from_line(const std::string &line, Point3D &out)
         out.x = std::stod(toks[0]);
         out.y = std::stod(toks[1]);
         out.z = std::stod(toks[2]);
+
+        if (toks.size() >= 4 && is_number(toks[3]))
+        {
+            out.radius = std::stod(toks[3]);
+            out.has_radius = true;
+        }
+        else
+        {
+            out.radius = std::numeric_limits<double>::quiet_NaN();
+            out.has_radius = false;
+        }
         return true;
     }
     return false;
@@ -79,7 +92,7 @@ std::vector<Point3D> load_centerline_csv(const std::string &path, bool &had_head
     std::ifstream ifs(path);
     if (!ifs)
     {
-        throw std::runtime_error("ファイルを開けませんでした: " + path);
+        throw std::runtime_error("can't open file: " + path);
     }
 
     std::vector<Point3D> pts;
@@ -91,7 +104,7 @@ std::vector<Point3D> load_centerline_csv(const std::string &path, bool &had_head
     while (std::getline(ifs, line))
     {
         Point3D p;
-        bool ok = parse_xyz_from_line(line, p);
+        bool ok = parse_xyzr_from_line(line, p);
         if (!first_meaningful_seen)
         {
             auto toks = tokenize_relaxed(line);
@@ -121,7 +134,8 @@ int main(int argc, char **argv)
 
     if (argc < 2)
     {
-        std::cerr << "使い方: " << argv[0] << " input.csv\n";
+        std::cerr << "How To Use. put input data at: " << argv[0] << " input.csv\n";
+        std::cout << "and excute from terminal()\n";
         return 1;
     }
 
@@ -130,9 +144,9 @@ int main(int argc, char **argv)
         bool had_header = false;
         auto pts = load_centerline_csv(argv[1], had_header);
 
-        std::cout << "読み込み点数: " << pts.size();
+        std::cout << "num of centerline points: " << pts.size();
         if (had_header)
-            std::cout << "（ヘッダあり）";
+            std::cout << "(header)";
         std::cout << "\n";
 
         if (!pts.empty())
@@ -158,14 +172,37 @@ int main(int argc, char **argv)
                       << xmin << ", " << ymin << ", " << zmin << "] - ["
                       << xmax << ", " << ymax << ", " << zmax << "]\n";
 
-            std::cout << "先頭点: (" << pts.front().x << ", " << pts.front().y << ", " << pts.front().z << ")\n";
-            std::cout << "末尾点: (" << pts.back().x << ", " << pts.back().y << ", " << pts.back().z << ")\n";
+            std::cout << "start point: (" << pts.front().x << ", " << pts.front().y << ", " << pts.front().z << ")\n";
+            std::cout << "end point: (" << pts.back().x << ", " << pts.back().y << ", " << pts.back().z << ")\n";
+
+            double rmin = std::numeric_limits<double>::infinity();
+            double rmax = -std::numeric_limits<double>::infinity();
+            long double rsum = 0.0L;
+            std::size_t rcount = 0;
+
+            for (const auto &p : pts)
+            {
+                if (p.has_radius)
+                {
+                    rmin = std::min(rmin, p.radius);
+                    rmax = std::max(rmax, p.radius);
+                    rsum += p.radius;
+                    ++rcount;
+                }
+            }
+
+            if (rcount > 0)
+            {
+                double rmean = static_cast<double>(rsum / static_cast<long double>(rcount));
+                std::cout << "radius stats (from " << rcount << " points): "
+                          << "min=" << rmin << ", max=" << rmax << ", mean=" << rmean << "\n";
+            }
         }
         return 0;
     }
     catch (const std::exception &e)
     {
-        std::cerr << "エラー: " << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << "\n";
         return 2;
     }
 }

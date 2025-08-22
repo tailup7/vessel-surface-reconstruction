@@ -1,3 +1,9 @@
 *.stl
 *.csv
+*.exe
+
+test.cpp
+
 slices/
+.vs/
+VisualStudio/

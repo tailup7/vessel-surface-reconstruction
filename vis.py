@@ -1,4 +1,4 @@
-# visualize cross section perpendicular to the centerline by using pvparaview
+# visualize vascular slices perpendicular to the centerline by using pvpython
 
 from paraview.simple import *
 import numpy as np
