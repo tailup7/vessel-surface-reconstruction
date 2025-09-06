@@ -3,7 +3,14 @@
 *.exe
 
 test.cpp
+tmp.py
+
+input.stl
+input2.stl
+centerline.csv
 
 slices/
 .vs/
 VisualStudio/
+data/
+vessel-surface-reconstruction/
