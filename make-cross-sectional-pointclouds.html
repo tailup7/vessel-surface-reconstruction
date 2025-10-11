@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>2D 点群クリック可視化 + CSV出力（円をポップアップで追加／重複点削除）</title>
+  <style>
+    #plot {
+      border: 1px solid #333;
+      display: block;
+      margin-bottom: 8px;
+    }
+    #plot.mode-add { cursor: crosshair; }
+    #plot.mode-del { cursor: not-allowed; }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+    .mode-btn, .action-btn {
+      padding: 6px 10px;
+      border: 1px solid #888;
+      background: #f4f4f4;
+      cursor: pointer;
+    }
+    .mode-btn.active {
+      border-color: #2b6cb0;
+      background: #e6f0ff;
+      font-weight: bold;
+    }
+    #modeIndicator { margin-left: 8px; }
+
+    /* ===== dialog (popup) ===== */
+    dialog {
+      border: 1px solid #888;
+      border-radius: 8px;
+      padding: 16px 16px 12px;
+      max-width: 360px;
+    }
+    dialog::backdrop { background: rgba(0,0,0,0.2); }
+    .dlg-row { display: grid; grid-template-columns: 80px 1fr; gap: 8px; margin-bottom: 10px; }
+    .dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+    .dlg-row input { width: 100%; padding: 6px 8px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <canvas id="plot" width="800" height="800" class="mode-add"></canvas>
+
+  <div class="toolbar">
+    <button id="modeAdd" class="mode-btn active" title="A キーでも切替可">点追加モード</button>
+    <button id="modeDel" class="mode-btn"        title="D キーでも切替可">点削除モード</button>
+    <button id="circleAdd" class="action-btn">円を追加</button>
+    <button id="dedupe"    class="action-btn">重複点を削除</button>
+    <button id="exportCsv" class="action-btn">CSV に出力</button>
+    <button id="clearAll"  class="action-btn">全消去</button>
+    <span id="modeIndicator">現在モード：追加</span>
+  </div>
+
+  <div id="info">クリックした点： (x, y) = …</div>
+
+  <!-- 円追加ポップアップ -->
+  <dialog id="circleDialog">
+    <form method="dialog" id="circleForm">
+      <h3 style="margin:0 0 10px;">円を追加</h3>
+      <div class="dlg-row"><label for="dlg_cx">中心 x (cx)</label><input id="dlg_cx" type="number" step="0.1" required></div>
+      <div class="dlg-row"><label for="dlg_cy">中心 y (cy)</label><input id="dlg_cy" type="number" step="0.1" required></div>
+      <div class="dlg-row"><label for="dlg_r">半径 (r)</label><input id="dlg_r" type="number" step="0.1" min="0.0001" required></div>
+      <div class="dlg-row"><label for="dlg_n">点数 (N)</label><input id="dlg_n" type="number" step="1" min="3" max="20000" required></div>
+      <div class="dlg-actions">
+        <button value="cancel" type="button" id="dlg_cancel">キャンセル</button>
+        <button value="ok" id="dlg_ok">追加</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const canvas = document.getElementById('plot');
+    const ctx = canvas.getContext('2d');
+    const info = document.getElementById('info');
+
+    const exportBtn   = document.getElementById('exportCsv');
+    const clearBtn    = document.getElementById('clearAll');
+    const modeAddBtn  = document.getElementById('modeAdd');
+    const modeDelBtn  = document.getElementById('modeDel');
+    const circleAddBtn= document.getElementById('circleAdd');
+    const dedupeBtn   = document.getElementById('dedupe');
+    const modeIndicator = document.getElementById('modeIndicator');
+
+    // dialog refs
+    const circleDialog = document.getElementById('circleDialog');
+    const dlgCx = document.getElementById('dlg_cx');
+    const dlgCy = document.getElementById('dlg_cy');
+    const dlgR  = document.getElementById('dlg_r');
+    const dlgN  = document.getElementById('dlg_n');
+    const dlgOk = document.getElementById('dlg_ok');
+    const dlgCancel = document.getElementById('dlg_cancel');
+
+    // ==== 座標系設定 ====
+    const xMin = -60, xMax = 60;
+    const yMin = -60, yMax = 60;
+
+    // プロット余白（ラベル外側表示）
+    const MARGIN = { left: 48, right: 12, top: 12, bottom: 28 };
+
+    // グリッド刻み
+    const MINOR_STEP = 1;
+    const MAJOR_STEP = 10;
+
+    // 目盛ラベル
+    const TICK_FONT = '12px monospace';
+    const TICK_COLOR = '#555';
+    const X_LABEL_OFFSET_PX = 4;
+    const Y_LABEL_OFFSET_PX = 6;
+
+    // 丸め桁（CSVと重複判定で共通化）
+    const CSV_DECIMALS = 6;
+    const DEDUPE_DECIMALS = 6;
+
+    const points = []; // {x,y}
+    const HIT_RADIUS_PX = 6;
+
+    // 現在モード
+    let mode = 'add';
+    function setMode(next) {
+      mode = next;
+      modeAddBtn.classList.toggle('active', mode === 'add');
+      modeDelBtn.classList.toggle('active', mode === 'del');
+      canvas.classList.remove('mode-add','mode-del');
+      canvas.classList.add(mode === 'add' ? 'mode-add' : 'mode-del');
+      modeIndicator.textContent = `現在モード：${mode === 'add' ? '追加' : '削除'}`;
+    }
+
+    function plotRect() {
+      return { x: MARGIN.left, y: MARGIN.top, w: canvas.width - MARGIN.left - MARGIN.right, h: canvas.height - MARGIN.top - MARGIN.bottom };
+    }
+    function inPlot(px, py) {
+      const r = plotRect();
+      return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    }
+    function toCanvasCoords(x, y) {
+      const r = plotRect();
+      const px = r.x + ((x - xMin) / (xMax - xMin)) * r.w;
+      const py = r.y + r.h - ((y - yMin) / (yMax - yMin)) * r.h;
+      return { px, py };
+    }
+    function toDataCoords(px, py) {
+      const r = plotRect();
+      const nx = (px - r.x) / r.w;
+      const ny = (r.h - (py - r.y)) / r.h;
+      const x = xMin + nx * (xMax - xMin);
+      const y = yMin + ny * (yMax - yMin);
+      return { x, y };
+    }
+
+    function drawGridAndAxes() {
+      const r = plotRect();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // グリッド（プロット領域にクリップ）
+      ctx.save();
+      ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+
+      // 細目
+      ctx.beginPath();
+      for (let x = Math.ceil(xMin / MINOR_STEP) * MINOR_STEP; x <= xMax; x += MINOR_STEP) {
+        const { px } = toCanvasCoords(x, yMin);
+        ctx.moveTo(Math.round(px)+0.5, r.y);
+        ctx.lineTo(Math.round(px)+0.5, r.y + r.h);
+      }
+      for (let y = Math.ceil(yMin / MINOR_STEP) * MINOR_STEP; y <= yMax; y += MINOR_STEP) {
+        const { py } = toCanvasCoords(xMin, y);
+        ctx.moveTo(r.x, Math.round(py)+0.5);
+        ctx.lineTo(r.x + r.w, Math.round(py)+0.5);
+      }
+      ctx.strokeStyle = '#e9e9e9'; ctx.lineWidth = 1; ctx.stroke();
+
+      // 太目
+      ctx.beginPath();
+      for (let x = Math.ceil(xMin / MAJOR_STEP) * MAJOR_STEP; x <= xMax; x += MAJOR_STEP) {
+        const { px } = toCanvasCoords(x, yMin);
+        ctx.moveTo(Math.round(px)+0.5, r.y);
+        ctx.lineTo(Math.round(px)+0.5, r.y + r.h);
+      }
+      for (let y = Math.ceil(yMin / MAJOR_STEP) * MAJOR_STEP; y <= yMax; y += MAJOR_STEP) {
+        const { py } = toCanvasCoords(xMin, y);
+        ctx.moveTo(r.x, Math.round(py)+0.5);
+        ctx.lineTo(r.x + r.w, Math.round(py)+0.5);
+      }
+      ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.stroke();
+
+      ctx.restore();
+
+      // 枠
+      ctx.strokeStyle = '#333';
+      ctx.strokeRect(Math.round(r.x)+0.5, Math.round(r.y)+0.5, r.w, r.h);
+
+      // 目盛値（外側）
+      ctx.font = TICK_FONT; ctx.fillStyle = TICK_COLOR;
+
+      // x
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      for (let x = Math.ceil(xMin / MAJOR_STEP) * MAJOR_STEP; x <= xMax; x += MAJOR_STEP) {
+        const { px } = toCanvasCoords(x, yMin);
+        ctx.fillText(String(x), px, r.y + r.h + X_LABEL_OFFSET_PX);
+      }
+      // y
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      for (let y = Math.ceil(yMin / MAJOR_STEP) * MAJOR_STEP; y <= yMax; y += MAJOR_STEP) {
+        const { py } = toCanvasCoords(xMin, y);
+        ctx.fillText(String(y), r.x - Y_LABEL_OFFSET_PX, py);
+      }
+    }
+
+    function drawPoint(px, py) {
+      ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function redraw() {
+      drawGridAndAxes();
+      ctx.fillStyle = 'red';
+      for (const p of points) {
+        const { px, py } = toCanvasCoords(p.x, p.y);
+        drawPoint(px, py);
+      }
+    }
+
+    // 追加/削除クリック操作
+    canvas.addEventListener('click', (evt) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = evt.clientX - rect.left;
+      const py = evt.clientY - rect.top;
+      if (!inPlot(px, py)) return;
+
+      if (mode === 'del') {
+        // 最近傍を削除（半径判定）
+        let best=-1, bestD2=Infinity;
+        for (let i=0;i<points.length;i++){
+          const {px:qx, py:qy} = toCanvasCoords(points[i].x, points[i].y);
+          const d2=(px-qx)**2+(py-qy)**2;
+          if (d2 < HIT_RADIUS_PX**2 && d2 < bestD2){ best=i; bestD2=d2; }
+        }
+        if (best !== -1){
+          const rm = points.splice(best,1)[0];
+          info.textContent = `点を削除： (${rm.x.toFixed(2)}, ${rm.y.toFixed(2)})`;
+          redraw();
+        } else {
+          info.textContent = '削除対象の点は見つかりませんでした';
+        }
+        return;
+      }
+
+      // 追加モード
+      const { x, y } = toDataCoords(px, py);
+      points.push({ x, y });
+      info.textContent = `追加： (${x.toFixed(2)}, ${y.toFixed(2)})`;
+      redraw();
+    });
+
+    // ===== 円をポップアップで追加 =====
+    const lastCircle = { cx: 0, cy: 0, r: 10, n: 100 }; // 直近値を記憶
+
+    circleAddBtn.addEventListener('click', () => {
+      dlgCx.value = String(lastCircle.cx);
+      dlgCy.value = String(lastCircle.cy);
+      dlgR.value  = String(lastCircle.r);
+      dlgN.value  = String(lastCircle.n);
+
+      if (typeof circleDialog.showModal === 'function') {
+        circleDialog.showModal();
+      } else {
+        circleDialog.setAttribute('open','');
+      }
+    });
+
+    dlgCancel.addEventListener('click', () => {
+      circleDialog.close && circleDialog.close();
+      circleDialog.removeAttribute('open');
+    });
+
+    dlgOk.addEventListener('click', (e) => {
+      e.preventDefault();
+      const cx = parseFloat(dlgCx.value);
+      const cy = parseFloat(dlgCy.value);
+      const r  = parseFloat(dlgR.value);
+      let n    = parseInt(dlgN.value, 10);
+
+      if (!isFinite(cx) || !isFinite(cy)) { alert('中心 (cx, cy) を数値で入力してください'); return; }
+      if (!(isFinite(r) && r > 0)) { alert('半径 r は正の数で入力してください'); return; }
+      if (!(Number.isFinite(n) && n >= 3)) { alert('点数 N は 3 以上の整数で入力してください'); return; }
+      if (n > 20000) n = 20000;
+
+      lastCircle.cx = cx; lastCircle.cy = cy; lastCircle.r = r; lastCircle.n = n;
+
+      for (let i = 0; i < n; i++) {
+        const th = 2 * Math.PI * i / n;
+        const x = cx + r * Math.cos(th);
+        const y = cy + r * Math.sin(th);
+        points.push({ x, y });
+      }
+      info.textContent = `円を追加: 中心 (${cx.toFixed(2)}, ${cy.toFixed(2)}), 半径=${r}, 点数=${n}`;
+      redraw();
+
+      circleDialog.close && circleDialog.close();
+      circleDialog.removeAttribute('open');
+    });
+
+    // ===== 重複点を削除（丸め比較） =====
+    dedupeBtn.addEventListener('click', () => {
+      if (points.length === 0) { alert('点がありません。'); return; }
+
+      const seen = new Set();
+      const deduped = [];
+      let removed = 0;
+
+      for (const p of points) {
+        // 丸めたキーで比較して浮動小数誤差を吸収
+        const key = `${p.x.toFixed(DEDUPE_DECIMALS)},${p.y.toFixed(DEDUPE_DECIMALS)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(p);     // 最初の点を残す
+        } else {
+          removed++;           // 後続の重複を捨てる
+        }
+      }
+
+      if (removed > 0) {
+        points.length = 0;
+        points.push(...deduped);
+        redraw();
+      }
+      info.textContent = removed > 0
+        ? `重複点を削除しました：${removed} 点を削除（残り ${points.length} 点）`
+        : '重複点は見つかりませんでした';
+    });
+
+    // CSV（z=0・丸め桁を定数で統一）
+    exportBtn.addEventListener('click', () => {
+      if (points.length === 0) return alert('出力する点がありません。');
+      const header = 'x,y,z';
+      const rows = points.map(p => `${p.x.toFixed(CSV_DECIMALS)},${p.y.toFixed(CSV_DECIMALS)},0`);
+      const csv = '\uFEFF' + [header, ...rows].join('\r\n') + '\r\n';
+      const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='clicked_points.csv';
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    });
+
+    // 全消去
+    clearBtn.addEventListener('click', () => {
+      points.length = 0;
+      redraw();
+      info.textContent = '全ての点を消去しました';
+    });
+
+    // モード切替
+    modeAddBtn.addEventListener('click', () => setMode('add'));
+    modeDelBtn.addEventListener('click', () => setMode('del'));
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'a' || e.key === 'A') setMode('add');
+      if (e.key === 'd' || e.key === 'D') setMode('del');
+    });
+
+    // 初期化
+    redraw();
+    setMode('add');
+  </script>
+</body>
+</html>
