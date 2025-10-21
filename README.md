@@ -1,16 +1,16 @@
-# environment
-+ Windows11
-+ Visual Studio 2022
-+ 
-
 # vessel-surface-reconstruction
 
-<p align="left">
-  <img src="pictures/stenosis.png" width="40%">
-</p>
+## environment
++ Windows11
++ Visual Studio 2022
++ VTK
 
 
-# useful libraries; VTK
+
+
+
+
+## useful libraries; VTK
 
 https://examples.vtk.org/site/Cxx/VisualizationAlgorithms/TubesWithVaryingRadiusAndColors/
 
@@ -18,7 +18,7 @@ https://examples.vtk.org/site/Cxx/VisualizationAlgorithms/TubesFromSplines/
 
 https://examples.vtk.org/site/Cxx/PolyData/TubeFilter/
 
-# usage
+## usage
 Copy `TubeFromCenterline` folder to your directory (More precisely, you only need the `TubeFromCenterline.cpp` and  `CMakeLists.txt` in your folder), and
 ```
 cd TubeFromCenterline
@@ -35,3 +35,10 @@ and execute the program
 cd Debug
 ./TubeFromCenterline.exe
 ```
+
+
+### some memo for me
+
+<p align="left">
+  <img src="pictures/stenosis.png" width="40%">
+</p>
