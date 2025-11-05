@@ -3,10 +3,8 @@
 ## environment
 + Windows11
 + Visual Studio 2022
++ CMake 3.30
 + VTK
-
-
-
 
 
 
