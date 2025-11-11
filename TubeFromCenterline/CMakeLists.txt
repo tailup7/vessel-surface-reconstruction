@@ -27,8 +27,14 @@ endif()
 
 # Prevent a "command line is too long" failure in Windows.
 set(CMAKE_NINJA_FORCE_RESPONSE_FILE "ON" CACHE BOOL "Force Ninja to use response files.")
-add_executable(TubeFromCenterline MACOSX_BUNDLE TubeFromCenterline.cpp )
+
+add_executable(TubeFromCenterline MACOSX_BUNDLE TubeFromCenterline.cpp)
 target_link_libraries(TubeFromCenterline PRIVATE ${VTK_LIBRARIES})
+
+# Windows のファイルダイアログ用ライブラリ
+if (WIN32)
+  target_link_libraries(TubeFromCenterline PRIVATE comdlg32)
+endif()
 
 # vtk_module_autoinit is needed
 vtk_module_autoinit(
